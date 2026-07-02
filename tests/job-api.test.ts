@@ -193,4 +193,93 @@ describe("analysis jobs API", () => {
     const serializedLogs = JSON.stringify(logger.entries);
     expect(serializedLogs).not.toContain(secretText);
   });
+
+  it("returns 404 for a job id that does not exist", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const response = await request(app).get(
+      "/v1/analysis-jobs/00000000-0000-0000-0000-000000000000",
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: "JOB_NOT_FOUND" });
+  });
+
+  it("accepts userId and text at exactly the maximum allowed length", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const response = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "boundary-ok")
+      .send({ userId: "u".repeat(100), text: "t".repeat(2000) });
+
+    expect(response.status).toBe(202);
+  });
+
+  it("rejects userId and text that exceed the maximum allowed length", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const tooLongUserId = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "boundary-userid-fail")
+      .send({ userId: "u".repeat(101), text: "valid text" });
+    expect(tooLongUserId.status).toBe(400);
+    expect(tooLongUserId.body).toEqual({ error: "INVALID_REQUEST" });
+
+    const tooLongText = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "boundary-text-fail")
+      .send({ userId: "user-1", text: "t".repeat(2001) });
+    expect(tooLongText.status).toBe(400);
+    expect(tooLongText.body).toEqual({ error: "INVALID_REQUEST" });
+
+    expect(aiClient.calls).toBe(0);
+  });
+
+  it("rejects whitespace-only userId or text", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const response = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "whitespace-only")
+      .send({ userId: "   ", text: "   " });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: "INVALID_REQUEST" });
+    expect(aiClient.calls).toBe(0);
+  });
+
+  it("returns a stable error code for a malformed JSON body", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const response = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "malformed-json")
+      .set("Content-Type", "application/json")
+      .send("{ this is not valid json");
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: "INVALID_REQUEST" });
+    expect(aiClient.calls).toBe(0);
+  });
 });

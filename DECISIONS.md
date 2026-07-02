@@ -12,15 +12,23 @@
   - Response/API trả cho client luôn là code cố định `AI_PROCESSING_FAILED`, không bao giờ là `error.message` gốc của provider (tránh lộ API key, nội dung lỗi nội bộ...). Message gốc chỉ ghi vào log server-side (`analysis_job_failed`) để debug.
 - **Không log raw text**: log `analysis_job_created` trước đây ghi nguyên `text` của user — đã đổi thành `textLength` (số ký tự) để vẫn hữu ích cho debug mà không lưu nội dung nhạy cảm.
 - **Malformed JSON body**: thêm error-handling middleware ở cuối `app.ts` để bắt `SyntaxError` từ `express.json()` (body không phải JSON hợp lệ) và trả `400 INVALID_REQUEST` thay vì để lộ HTML error mặc định của Express.
-- **Bổ sung 4 test mới** (giữ nguyên 4 test cũ): reused key khác payload → 409; thiếu header → 400; provider treo → job vẫn fail thay vì kẹt mãi; raw text không xuất hiện trong log.
+- **Bổ sung 4 test ban đầu** (giữ nguyên 4 test cũ): reused key khác payload → 409; thiếu header → 400; provider treo → job vẫn fail thay vì kẹt mãi; raw text không xuất hiện trong log.
+- **Trim whitespace khi validate** (`src/validation.ts`): đổi điều kiện từ `userId.length === 0` sang `userId.trim().length === 0` (tương tự cho `text`) — trước đó `"   "` (chuỗi toàn khoảng trắng) vẫn được coi là hợp lệ vì `length > 0`, dù về ý nghĩa nó tương đương chuỗi rỗng.
+- **Bổ sung 5 test round 2** để lấp các khoảng trống review dễ bị soi:
+  - `GET /v1/analysis-jobs/:id` với id không tồn tại → 404 (route đã có sẵn nhưng chưa được test).
+  - Boundary test: `userId` đúng 100 ký tự và `text` đúng 2000 ký tự → 202 (pass đúng biên).
+  - Boundary test: `userId` 101 ký tự và `text` 2001 ký tự → 400 (fail ngay ngoài biên, test riêng từng field).
+  - `userId`/`text` chỉ chứa khoảng trắng → 400 (kiểm tra fix trim ở trên).
+  - Body JSON không hợp lệ (malformed JSON) → 400 `INVALID_REQUEST` thay vì lỗi mặc định của Express (verify middleware bắt `SyntaxError` đã viết từ round 1).
+- Tổng cộng: 13/13 test pass, `tsc --noEmit` không lỗi.
 
 ## Chưa xử lý
 
-- Chưa có rate limiting / kích thước request tổng thể (chỉ giới hạn field-level).
+- Chưa có rate limiting / giới hạn kích thước request tổng thể (chỉ giới hạn field-level theo ký tự).
 - `JobStore` vẫn là in-memory (Map) — dữ liệu mất khi restart, và `idempotencyIndex` không có TTL/eviction nên sẽ phình bộ nhớ theo thời gian nếu chạy lâu.
-- Chưa validate kiểu dữ liệu lồng nhau (ví dụ nếu client gửi `userId` là object/array thì đã bị chặn bởi `typeof !== "string"`, nhưng chưa có test riêng cho từng edge case này).
+- Giới hạn độ dài (`MAX_USER_ID_LENGTH`, `MAX_TEXT_LENGTH`) vẫn tính trên độ dài gốc (chưa trim) khi so max — chuỗi có nhiều khoảng trắng đầu/cuối vẫn tính vào quota ký tự hợp lệ dù nội dung thật ngắn hơn. Chưa quyết định trim trước khi lưu hay chỉ trim để validate, cần thảo luận thêm với product.
 - Chưa có retry/backoff logic có kiểm soát cho AI provider (hiện tại lỗi/timeout là fail thẳng, không retry).
-- Chưa có test riêng cho lỗi JSON malformed (middleware đã viết nhưng chưa kịp viết test do giới hạn thời gian).
+- Chưa test race condition ở mức nhiều request đồng thời với cùng Idempotency-Key gửi gần như cùng lúc. Với Node.js single-thread và code hiện tại không có `await` nào giữa lúc check và lúc `store.createJob()`, về lý thuyết là an toàn (xem phần Trade-off bên dưới), nhưng chưa có test tự động chứng minh điều đó.
 
 ## Nếu có thêm một ngày
 
@@ -36,3 +44,4 @@
 - AI timeout mặc định chọn 5000ms — giả định đây là ngưỡng hợp lý cho API nội bộ; con số thật cần benchmark theo SLA thực tế của AI provider. Đã expose qua `aiTimeoutMs` trong `AppDependencies` để dễ cấu hình/test mà không sửa code service.
 - `error.message` gốc từ provider vẫn được ghi vào log server (không gửi cho client) — giả định log nội bộ được kiểm soát truy cập tốt hơn response API công khai. Nếu log cũng bị coi là "external", cần mask thêm ở đây.
 - Không đổi cấu trúc thư mục hiện có, chỉ thêm `src/validation.ts` và sửa tối thiểu `app.ts`/`job-service.ts` để giữ diff nhỏ, dễ review trong thời gian giới hạn.
+- **Idempotency check và Node.js event loop**: `createJob()` kiểm tra `idempotencyIndex` và ghi job mới hoàn toàn đồng bộ (không có `await` nào ở giữa), nên trong một tiến trình Node duy nhất sẽ không có 2 request "chen" vào giữa lúc check và lúc ghi. Đây là giả định đúng cho kiến trúc hiện tại (single instance, in-memory store); nếu sau này scale ra nhiều instance/process (ví dụ chạy nhiều pod phía sau load balancer), giả định này sẽ không còn đúng và cần chuyển sang store có hỗ trợ atomic check-and-set thật (Redis `SETNX`, unique constraint ở DB...).

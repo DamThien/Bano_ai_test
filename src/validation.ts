@@ -32,7 +32,7 @@ export function validateAnalysisRequest(
 
   if (
     typeof userId !== "string" ||
-    userId.length === 0 ||
+    userId.trim().length === 0 ||
     userId.length > MAX_USER_ID_LENGTH
   ) {
     return { ok: false };
@@ -40,7 +40,7 @@ export function validateAnalysisRequest(
 
   if (
     typeof text !== "string" ||
-    text.length === 0 ||
+    text.trim().length === 0 ||
     text.length > MAX_TEXT_LENGTH
   ) {
     return { ok: false };
