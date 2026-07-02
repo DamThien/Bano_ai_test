@@ -15,6 +15,9 @@
 - 5 test bổ sung trong `tests/job-api.test.ts`: 404 cho id không tồn tại, boundary test đúng 100/2000 ký tự (pass) và 101/2001 ký tự (fail), whitespace-only bị từ chối, malformed JSON body trả về 400 ổn định.
 - Nội dung `DECISIONS.md` (cả 2 round) do AI soạn dựa trên các thay đổi thực tế đã áp dụng vào code, bao gồm phần giải thích giả định về race condition với Node.js single-thread.
 
+**Round 3 (giải thích lý do vì sao các mục trong "Chưa xử lý" không làm, sau khi thảo luận với AI về việc phân biệt "không làm được" vs "cố tình không làm"):**
+- Viết lại mục "Chưa xử lý" trong `DECISIONS.md`, chia thành Nhóm A (làm được về kỹ thuật nhưng cần quyết định business/product nên không tự làm) và Nhóm B (không thể test/verify thật trong sandbox này nên không giả vờ hoàn thành, ví dụ Redis/DB thật). Nội dung do AI viết dựa trên cuộc trao đổi trực tiếp trong quá trình làm bài, không phải suy diễn thêm sau khi nộp.
+
 ## Phần tôi tự kiểm tra lại
 
 - Đã chạy `npm ci`, `npm test`, `npm run typecheck` trên máy sau cả 2 round — tổng cộng 13 test (4 test gốc + 9 test AI viết thêm) đều pass, typecheck không lỗi.

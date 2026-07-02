@@ -24,11 +24,20 @@
 
 ## Chưa xử lý
 
-- Chưa có rate limiting / giới hạn kích thước request tổng thể (chỉ giới hạn field-level theo ký tự).
-- `JobStore` vẫn là in-memory (Map) — dữ liệu mất khi restart, và `idempotencyIndex` không có TTL/eviction nên sẽ phình bộ nhớ theo thời gian nếu chạy lâu.
-- Giới hạn độ dài (`MAX_USER_ID_LENGTH`, `MAX_TEXT_LENGTH`) vẫn tính trên độ dài gốc (chưa trim) khi so max — chuỗi có nhiều khoảng trắng đầu/cuối vẫn tính vào quota ký tự hợp lệ dù nội dung thật ngắn hơn. Chưa quyết định trim trước khi lưu hay chỉ trim để validate, cần thảo luận thêm với product.
-- Chưa có retry/backoff logic có kiểm soát cho AI provider (hiện tại lỗi/timeout là fail thẳng, không retry).
-- Chưa test race condition ở mức nhiều request đồng thời với cùng Idempotency-Key gửi gần như cùng lúc. Với Node.js single-thread và code hiện tại không có `await` nào giữa lúc check và lúc `store.createJob()`, về lý thuyết là an toàn (xem phần Trade-off bên dưới), nhưng chưa có test tự động chứng minh điều đó.
+Chia rõ 2 nhóm lý do — không phải "chưa kịp làm" chung chung, mà là quyết định có chủ đích:
+
+**Nhóm A — làm được về mặt kỹ thuật, nhưng cố tình dừng lại vì cần quyết định ngoài phạm vi kỹ thuật (business/product), làm liều sẽ sai hơn là không làm:**
+
+- **Rate limiting**: code không khó (middleware kiểu `express-rate-limit`), nhưng con số hợp lý (bao nhiêu request/phút/user?) là quyết định sản phẩm, không phải kỹ thuật thuần. Đặt bừa một ngưỡng trong 60 phút có thể chặn nhầm traffic thật hoặc để lọt traffic tấn công — cả hai đều tệ hơn để trống và ghi rõ cần bàn với product/SRE.
+- **Retry/backoff cho AI provider**: viết code retry thì nhanh, nhưng cần quyết định retry loại lỗi nào (timeout có nên retry không, hay sẽ làm user chờ lâu hơn?), bao nhiêu lần, cost impact nếu provider tính phí theo request — đây là trade-off nghiệp vụ cần domain owner quyết, không tự đoán trong bài test.
+- **Trim trước khi lưu (`userId`/`text`) thay vì chỉ trim để validate**: nếu trim trước khi lưu thì `requestFingerprint` (hash) sẽ thay đổi theo, ảnh hưởng tới hành vi idempotency mà client hiện tại không lường trước (2 request cùng nội dung nhưng khác khoảng trắng đầu/cuối sẽ đổi từ "khác nhau" thành "giống nhau"). Đây là thay đổi hành vi API, không phải bug — cần confirm với người sở hữu spec trước khi đổi.
+- **Test race condition đa request đồng thời cùng key**: viết test này được (dùng `Promise.all` gửi song song), nhưng giá trị thấp vì lý do đã đúng về logic (xem phần Trade-off) — với kiến trúc single-instance hiện tại, check-and-create là đồng bộ nên không có race. Viết thêm test chỉ để "trông đầy đủ" mà không chứng minh thêm điều gì mới thì không đáng thời gian trong 60 phút.
+
+**Nhóm B — không thể làm *thật* trong môi trường bài test này, chỉ có thể giả vờ:**
+
+- **Persistent store (Redis/Postgres) cho `JobStore`**: môi trường chạy bài test không có Redis/DB thật để kết nối và test. Nếu viết code kết nối tới một connection string tưởng tượng thì không chạy được, không test được — tức là **giả vờ hoàn thành** một tính năng không thể verify, còn tệ hơn để trống và nêu rõ đây là việc cần làm tiếp khi có infra thật.
+- **TTL/eviction cho `idempotencyIndex`**: tương tự — cần store có TTL thật (Redis) để có ý nghĩa; làm bằng `setTimeout` trong Map in-memory chỉ là mô phỏng cho vui, không phản ánh đúng hành vi production.
+- `JobStore` in-memory nói chung: giữ nguyên vì đổi sang store thật đòi hỏi thay đổi lớn hơn phạm vi 60 phút và không thể test end-to-end trong sandbox này.
 
 ## Nếu có thêm một ngày
 
