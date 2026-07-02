@@ -117,4 +117,80 @@ describe("analysis jobs API", () => {
     expect(failed.body.error).toBe("AI_PROCESSING_FAILED");
     expect(JSON.stringify(failed.body)).not.toContain("sk-secret-value");
   });
+
+  it("rejects a reused Idempotency-Key when the payload differs", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const first = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "conflict-key")
+      .send({ userId: "user-1", text: "First payload" });
+    expect(first.status).toBe(202);
+
+    const second = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "conflict-key")
+      .send({ userId: "user-1", text: "Different payload" });
+
+    expect(second.status).toBe(409);
+    expect(second.body).toEqual({ error: "IDEMPOTENCY_KEY_CONFLICT" });
+  });
+
+  it("rejects a request missing the Idempotency-Key header", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const app = createApp({ aiClient, logger: new RecordingLogger() });
+
+    const response = await request(app)
+      .post("/v1/analysis-jobs")
+      .send({ userId: "user-1", text: "No header sent" });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: "INVALID_REQUEST" });
+    expect(aiClient.calls).toBe(0);
+  });
+
+  it("fails the job instead of leaving it stuck in processing when the AI provider hangs", async () => {
+    const aiClient = new StubAiClient(() => new Promise(() => {}));
+    const app = createApp({
+      aiClient,
+      logger: new RecordingLogger(),
+      aiTimeoutMs: 50,
+    });
+
+    const created = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "timeout-1")
+      .send({ userId: "user-1", text: "This call never resolves" });
+
+    const failed = await waitForTerminalStatus(app, created.body.id);
+    expect(failed.body.status).toBe("failed");
+    expect(failed.body.error).toBe("AI_PROCESSING_FAILED");
+  });
+
+  it("never writes the raw user text to the logs", async () => {
+    const aiClient = new StubAiClient(async () => ({
+      label: "normal",
+      confidence: 0.9,
+    }));
+    const logger = new RecordingLogger();
+    const app = createApp({ aiClient, logger });
+    const secretText = "super secret user content, do not log me";
+
+    const created = await request(app)
+      .post("/v1/analysis-jobs")
+      .set("Idempotency-Key", "log-check-1")
+      .send({ userId: "user-1", text: secretText });
+
+    await waitForTerminalStatus(app, created.body.id);
+
+    const serializedLogs = JSON.stringify(logger.entries);
+    expect(serializedLogs).not.toContain(secretText);
+  });
 });
